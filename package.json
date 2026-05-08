@@ -9,18 +9,19 @@
     "start": "npm run build && node dist/server.js",
     "typecheck": "tsc --noEmit",
     "db:init": "dotenv -e .env -- sh -c 'psql \"$DATABASE_URL\" -f sql/init.sql'"
-
   },
   "keywords": [],
   "author": "Ryan Soares",
   "license": "MIT",
   "description": "",
   "dependencies": {
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "pg": "^8.20.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^25.6.2",
     "@types/pg": "^8.20.0",
