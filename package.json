@@ -1,0 +1,29 @@
+{
+  "name": "fiamma-pizza-backend",
+  "version": "1.0.0",
+  "main": "dist/server.js",
+  "scripts": {
+    "test": "echo \"No tests yet\"",
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "Ryan Soares",
+  "license": "MIT",
+  "description": "",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.2",
+    "@types/pg": "^8.20.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  },
+  "type": "module"
+}
