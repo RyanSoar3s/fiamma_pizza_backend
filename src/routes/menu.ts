@@ -13,7 +13,14 @@ menuRouter.get('/menu', async (_req, res) => {
       p.price
     FROM categories c
     LEFT JOIN products p ON p.category_id = c.id
-    ORDER BY c.title, p.name;
+    ORDER BY
+      CASE
+        WHEN c.title = 'Pizzas Artesanais' THEN 1
+        WHEN c.title = 'Bebidas' THEN 2
+        WHEN c.title = 'Sobremesas' THEN 3
+        ELSE 999
+      END,
+      p.name;
   
   `;
 
