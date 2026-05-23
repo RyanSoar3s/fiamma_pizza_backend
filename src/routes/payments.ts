@@ -1,15 +1,8 @@
 import { Router } from 'express';
 import { MercadoPagoConfig, Payment, Preference } from 'mercadopago';
 import { env } from '../config/env.js';
-
-type PaymentItemInput = {
-  id?: string;
-  title: string;
-  quantity: number;
-  unit_price: number;
-  currency_id?: string;
-
-};
+import { pool } from '../database/pool.js';
+import { CreatePreferenceBody } from '../models/payment.js';
 
 export const paymentsRouter = Router();
 
@@ -17,6 +10,41 @@ function getMercadoPagoClient() {
   return new MercadoPagoConfig({ accessToken: env.mpAccessToken });
 
 }
+
+paymentsRouter.get('/orders', async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        external_reference,
+        payer_email,
+        items,
+        status,
+        payment_id,
+        created_at,
+        updated_at
+      FROM orders
+      ORDER BY created_at DESC
+      `,
+    );
+
+    return res.status(200).json({
+      count: result.rows.length,
+      orders: result.rows.map((row) => ({
+        externalReference: row.external_reference,
+        payerEmail: row.payer_email,
+        items: row.items,
+        status: row.status,
+        paymentId: row.payment_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }))
+    });
+  } catch (error) {
+    console.error('Orders list query error:', error);
+    return res.status(500).json({ error: 'Failed to list stored orders.' });
+  }
+});
 
 paymentsRouter.post('/payments/preference', async (req, res) => {
   if (!env.mpAccessToken) {
@@ -27,12 +55,7 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
 
   }
 
-  const { items, payerEmail, externalReference } = req.body as {
-    items?: PaymentItemInput[];
-    payerEmail?: string;
-    externalReference?: string;
-
-  };
+  const { items, payerEmail, externalReference } = req.body as CreatePreferenceBody;
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'The "items" array is required.' });
@@ -60,6 +83,21 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
   try {
     const client = getMercadoPagoClient();
     const preference = new Preference(client);
+    const orderReference = externalReference || `order-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    await pool.query(
+      `
+      INSERT INTO orders (external_reference, payer_email, items, status)
+      VALUES ($1, $2, $3::jsonb, 'pending')
+      ON CONFLICT (external_reference)
+      DO UPDATE SET
+        payer_email = EXCLUDED.payer_email,
+        items = EXCLUDED.items,
+        updated_at = NOW()
+      `,
+      [orderReference, payerEmail ?? null, JSON.stringify(items)],
+    );
+
     const response = await preference.create({
       body: {
         items: items.map((item) => ({
@@ -71,7 +109,7 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
           
         })),
         payer: (payerEmail) ? { email: payerEmail } : undefined,
-        external_reference: externalReference
+        external_reference: orderReference
 
       }
 
@@ -80,7 +118,8 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
     return res.status(201).json({
       id: response.id,
       initPoint: response.init_point,
-      sandboxInitPoint: response.sandbox_init_point
+      sandboxInitPoint: response.sandbox_init_point,
+      externalReference: orderReference
 
     });
 
@@ -128,6 +167,26 @@ paymentsRouter.post('/payments/webhook', async (req, res) => {
       externalReference: paymentInfo.external_reference
 
     });
+
+    if (paymentInfo.external_reference) {
+      await pool.query(
+        `
+        UPDATE orders
+        SET
+          status = $2,
+          payment_id = $3,
+          payment_payload = $4::jsonb,
+          updated_at = NOW()
+        WHERE external_reference = $1
+        `,
+        [
+          paymentInfo.external_reference,
+          paymentInfo.status ?? 'unknown',
+          paymentInfo.id ? String(paymentInfo.id) : null,
+          JSON.stringify(paymentInfo),
+        ],
+      );
+    }
 
     return res.status(200).json({
       received: true,
@@ -178,9 +237,40 @@ paymentsRouter.get('/payments/status/:externalReference', async (req, res) => {
     const latestPayment = result.results?.[0];
 
     if (!latestPayment) {
-      return res.status(404).json({
-        found: false,
-        externalReference
+      const orderResult = await pool.query(
+        `
+        SELECT
+          external_reference,
+          status,
+          payment_id,
+          created_at,
+          updated_at
+        FROM orders
+        WHERE external_reference = $1
+        LIMIT 1
+        `,
+        [externalReference],
+      );
+
+      const storedOrder = orderResult.rows[0];
+
+      if (!storedOrder) {
+        return res.status(404).json({
+          found: false,
+          externalReference
+        });
+      }
+
+      return res.status(200).json({
+        found: true,
+        externalReference,
+        payment: null,
+        storedOrder: {
+          status: storedOrder.status,
+          paymentId: storedOrder.payment_id,
+          createdAt: storedOrder.created_at,
+          updatedAt: storedOrder.updated_at
+        }
       });
     }
 
