@@ -17,6 +17,18 @@ CREATE TABLE IF NOT EXISTS products (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_products_category_name
   ON products (category_id, name);
 
+CREATE TABLE IF NOT EXISTS orders (
+  id SERIAL PRIMARY KEY,
+  external_reference TEXT NOT NULL UNIQUE,
+  payer_email TEXT,
+  items JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  payment_id TEXT,
+  payment_payload JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 INSERT INTO categories (title)
 VALUES ('Pizzas Artesanais'), ('Bebidas'), ('Sobremesas')
 ON CONFLICT (title) DO NOTHING;
