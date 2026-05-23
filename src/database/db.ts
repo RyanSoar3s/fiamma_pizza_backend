@@ -29,4 +29,18 @@ export async function ensureSchema() {
     ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT '';
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id SERIAL PRIMARY KEY,
+      external_reference TEXT NOT NULL UNIQUE,
+      payer_email TEXT,
+      items JSONB NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      payment_id TEXT,
+      payment_payload JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
 }
