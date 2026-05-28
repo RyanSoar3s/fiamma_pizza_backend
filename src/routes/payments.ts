@@ -109,7 +109,8 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
           
         })),
         payer: (payerEmail) ? { email: payerEmail } : undefined,
-        external_reference: orderReference
+        external_reference: orderReference,
+        notification_url: env.mpWebhookUrl || undefined
 
       }
 
