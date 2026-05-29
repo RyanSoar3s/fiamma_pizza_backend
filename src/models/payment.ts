@@ -1,13 +1,18 @@
-export type PaymentItemInput = {
-  id?: string;
+export type OrderItemInput = {
+  productId: number;
+  quantity: number;
+};
+
+export type PreferenceItem = {
+  id: string;
   title: string;
   quantity: number;
   unit_price: number;
-  currency_id?: string;
+  currency_id: string;
 };
 
 export type CreatePreferenceBody = {
-  items?: PaymentItemInput[];
+  items?: OrderItemInput[];
   payerEmail?: string;
   externalReference?: string;
 };
