@@ -2,9 +2,90 @@ import { Router } from 'express';
 import { MercadoPagoConfig, Payment, Preference } from 'mercadopago';
 import { env } from '../config/env.js';
 import { pool } from '../database/pool.js';
-import { CreatePreferenceBody } from '../models/payment.js';
+import { CreatePreferenceBody, PreferenceItem } from '../models/payment.js';
 
 export const paymentsRouter = Router();
+
+const ORDER_FEE_ITEM = {
+  id: 'order-fee',
+  title: 'Taxa de serviço',
+  quantity: 1,
+  unit_price: 7,
+  currency_id: 'BRL'
+};
+
+function getItemsValidationError(items: CreatePreferenceBody['items']) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return 'The "items" array is required.';
+
+  }
+
+  const hasInvalidItem = items.some((item) => (
+    typeof item.productId !== 'number'
+    || !Number.isInteger(item.productId)
+    || item.productId <= 0
+    || typeof item.quantity !== 'number'
+    || !Number.isInteger(item.quantity)
+    || item.quantity <= 0
+
+  ));
+
+  if (hasInvalidItem) {
+    return 'Each item must include valid productId and quantity values.';
+
+  }
+
+  return null;
+}
+
+async function getOrderSummary(items: NonNullable<CreatePreferenceBody['items']>) {
+  const quantitiesByProductId = items.reduce<Map<number, number>>((acc, item) => {
+    acc.set(item.productId, (acc.get(item.productId) ?? 0) + item.quantity);
+    return acc;
+  }, new Map());
+  const productIds = [...quantitiesByProductId.keys()];
+  const productsResult = await pool.query(
+    `
+    SELECT id, name, price
+    FROM products
+    WHERE id = ANY($1::int[])
+    `,
+    [productIds],
+  );
+  const productsById = new Map(productsResult.rows.map((row) => [Number(row.id), row]));
+  const missingProductIds = productIds.filter((productId) => !productsById.has(productId));
+
+  if (missingProductIds.length > 0) {
+    return {
+      error: `Products not found: ${missingProductIds.join(', ')}`
+    };
+
+  }
+
+  const orderItems: PreferenceItem[] = productIds.map((productId) => {
+    const product = productsById.get(productId);
+
+    return {
+      id: String(productId),
+      title: product.name,
+      quantity: quantitiesByProductId.get(productId) ?? 0,
+      unit_price: Number(product.price),
+      currency_id: 'BRL'
+    };
+  });
+  const subtotal = orderItems.reduce((total, item) => (
+    total + (item.quantity * item.unit_price)
+  ), 0);
+  const feeAmount = ORDER_FEE_ITEM.quantity * ORDER_FEE_ITEM.unit_price;
+
+  return {
+    items: orderItems,
+    fee: ORDER_FEE_ITEM,
+    subtotal,
+    total: subtotal + feeAmount,
+    currencyId: ORDER_FEE_ITEM.currency_id
+  };
+}
 
 function getMercadoPagoClient() {
   return new MercadoPagoConfig({ accessToken: env.mpAccessToken });
@@ -46,6 +127,31 @@ paymentsRouter.get('/orders', async (_req, res) => {
   }
 });
 
+paymentsRouter.post('/payments/summary', async (req, res) => {
+  const { items } = req.body as CreatePreferenceBody;
+  const validationError = getItemsValidationError(items);
+
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+
+  }
+
+  try {
+    const orderSummary = await getOrderSummary(items as NonNullable<CreatePreferenceBody['items']>);
+
+    if ('error' in orderSummary) {
+      return res.status(404).json({ error: orderSummary.error });
+
+    }
+
+    return res.status(200).json(orderSummary);
+  } catch (error) {
+    console.error('Payment summary error:', error);
+    return res.status(500).json({ error: 'Failed to calculate payment summary.' });
+
+  }
+});
+
 paymentsRouter.post('/payments/preference', async (req, res) => {
   if (!env.mpAccessToken) {
     return res.status(500).json({
@@ -56,27 +162,10 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
   }
 
   const { items, payerEmail, externalReference } = req.body as CreatePreferenceBody;
+  const validationError = getItemsValidationError(items);
 
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ error: 'The "items" array is required.' });
-
-  }
-
-  const hasInvalidItem = items.some((item) => (
-    typeof item.title !== 'string'
-    || item.title.trim().length === 0
-    || typeof item.quantity !== 'number'
-    || item.quantity <= 0
-    || typeof item.unit_price !== 'number'
-    || item.unit_price <= 0
-
-  ));
-
-  if (hasInvalidItem) {
-    return res.status(400).json({
-      error: 'Each item must include valid title, quantity and unit_price values.'
-
-    });
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
 
   }
 
@@ -84,6 +173,14 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
     const client = getMercadoPagoClient();
     const preference = new Preference(client);
     const orderReference = externalReference || `order-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const orderSummary = await getOrderSummary(items as NonNullable<CreatePreferenceBody['items']>);
+
+    if ('error' in orderSummary) {
+      return res.status(404).json({ error: orderSummary.error });
+
+    }
+
+    const preferenceItems = [...orderSummary.items, orderSummary.fee];
 
     await pool.query(
       `
@@ -95,19 +192,12 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
         items = EXCLUDED.items,
         updated_at = NOW()
       `,
-      [orderReference, payerEmail ?? null, JSON.stringify(items)],
+      [orderReference, payerEmail ?? null, JSON.stringify(preferenceItems)],
     );
 
     const response = await preference.create({
       body: {
-        items: items.map((item) => ({
-          id: item.id ?? item.title.toLowerCase().replace(/\s+/g, '-'),
-          title: item.title,
-          quantity: item.quantity,
-          unit_price: item.unit_price,
-          currency_id: item.currency_id ?? 'BRL'
-          
-        })),
+        items: preferenceItems,
         payer: (payerEmail) ? { email: payerEmail } : undefined,
         external_reference: orderReference,
         notification_url: env.mpWebhookUrl || undefined
