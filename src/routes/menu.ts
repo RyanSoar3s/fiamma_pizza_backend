@@ -7,6 +7,7 @@ menuRouter.get('/menu', async (_req, res) => {
   const query = `
     SELECT
       c.title,
+      p.id,
       p.name,
       p.description,
       p.image_url,
@@ -28,7 +29,7 @@ menuRouter.get('/menu', async (_req, res) => {
 
   const grouped = result.rows.reduce<Array<{
     title: string;
-    items: Array<{ name: string; desc: string; imageUrl: string; price: number }>;
+    items: Array<{ id: number; name: string; desc: string; imageUrl: string; price: number }>;
 
   }>>((acc, row) => {
     let category = acc.find((entry) => entry.title === row.title);
@@ -41,6 +42,7 @@ menuRouter.get('/menu', async (_req, res) => {
 
     if (row.name) {
       category.items.push({
+        id: Number(row.id),
         name: row.name,
         desc: row.description,
         imageUrl: row.image_url,
