@@ -199,7 +199,7 @@ Response example:
 
 #### `POST /api/payments/preference`
 
-Creates a Mercado Pago checkout preference and stores the order as `pending`.
+Creates a Mercado Pago checkout preference and stores the order as `pending`. If there is already an active pending preference for the same `externalReference` (or same cart/e-mail when no reference is provided), the API returns the existing link. New preference links expire after 10 minutes.
 
 Request:
 
@@ -223,7 +223,9 @@ Response example:
   "id": "123456789",
   "initPoint": "https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
   "sandboxInitPoint": "https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
-  "externalReference": "order-123"
+  "externalReference": "order-123",
+  "expiresAt": "2026-05-31T18:10:00.000Z",
+  "reused": false
 }
 ```
 
@@ -474,7 +476,7 @@ Exemplo de resposta:
 
 #### `POST /api/payments/preference`
 
-Cria uma preferência de checkout no Mercado Pago e salva o pedido como `pending`.
+Cria uma preferência de checkout no Mercado Pago e salva o pedido como `pending`. Se já houver uma preferência pendente ativa para o mesmo `externalReference` (ou mesmo carrinho/e-mail quando nenhuma referência for enviada), a API retorna o link existente. Novos links de preferência expiram após 10 minutos.
 
 Requisição:
 
@@ -498,7 +500,9 @@ Exemplo de resposta:
   "id": "123456789",
   "initPoint": "https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
   "sandboxInitPoint": "https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
-  "externalReference": "order-123"
+  "externalReference": "order-123",
+  "expiresAt": "2026-05-31T18:10:00.000Z",
+  "reused": false
 }
 ```
 
