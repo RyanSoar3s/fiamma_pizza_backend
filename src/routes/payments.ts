@@ -7,6 +7,7 @@ import { CreatePreferenceBody, PreferenceItem } from '../models/payment.js';
 export const paymentsRouter = Router();
 
 const PREFERENCE_TTL_MINUTES = 10;
+const PREFERENCE_TTL_SECONDS = PREFERENCE_TTL_MINUTES * 60;
 
 const ORDER_FEE_ITEM = {
   id: 'order-fee',
@@ -96,7 +97,7 @@ function getMercadoPagoClient() {
 
 function getPreferenceExpirationDates() {
   const createdAt = new Date();
-  const expiresAt = new Date(createdAt.getTime() + (PREFERENCE_TTL_MINUTES * 60 * 1000));
+  const expiresAt = new Date(createdAt.getTime() + (PREFERENCE_TTL_SECONDS * 1000));
 
   return {
     createdAt,
@@ -104,8 +105,41 @@ function getPreferenceExpirationDates() {
   };
 }
 
+function getExpiresInSeconds(expiresAt: Date | string | null | undefined) {
+  if (!expiresAt) {
+    return null;
+  }
+
+  const expiresAtTime = new Date(expiresAt).getTime();
+
+  if (Number.isNaN(expiresAtTime)) {
+    return null;
+  }
+
+  return Math.max(0, Math.ceil((expiresAtTime - Date.now()) / 1000));
+}
+
+async function expireStalePreferences(externalReference?: string) {
+  await pool.query(
+    `
+    UPDATE orders
+    SET
+      status = 'expired',
+      updated_at = NOW()
+    WHERE status = 'pending'
+      AND payment_id IS NULL
+      AND preference_expires_at IS NOT NULL
+      AND preference_expires_at <= NOW()
+      AND ($1::text IS NULL OR external_reference = $1)
+    `,
+    [externalReference ?? null],
+  );
+}
+
 paymentsRouter.get('/orders', async (_req, res) => {
   try {
+    await expireStalePreferences();
+
     const result = await pool.query(
       `
       SELECT
@@ -113,6 +147,10 @@ paymentsRouter.get('/orders', async (_req, res) => {
         payer_email,
         items,
         status,
+        preference_id,
+        preference_init_point,
+        preference_sandbox_init_point,
+        preference_expires_at,
         payment_id,
         created_at,
         updated_at
@@ -128,6 +166,14 @@ paymentsRouter.get('/orders', async (_req, res) => {
         payerEmail: row.payer_email,
         items: row.items,
         status: row.status,
+        preference: {
+          id: row.preference_id,
+          initPoint: row.preference_init_point,
+          sandboxInitPoint: row.preference_sandbox_init_point,
+          expiresAt: row.preference_expires_at,
+          expiresInSeconds: getExpiresInSeconds(row.preference_expires_at),
+          expired: getExpiresInSeconds(row.preference_expires_at) === 0
+        },
         paymentId: row.payment_id,
         createdAt: row.created_at,
         updatedAt: row.updated_at
@@ -182,6 +228,8 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
   }
 
   try {
+    await expireStalePreferences(externalReference);
+
     const orderSummary = await getOrderSummary(items as NonNullable<CreatePreferenceBody['items']>);
 
     if ('error' in orderSummary) {
@@ -224,12 +272,15 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
     const activeOrder = existingOrderResult.rows[0];
 
     if (activeOrder) {
+      const expiresInSeconds = getExpiresInSeconds(activeOrder.preference_expires_at);
+
       return res.status(200).json({
         id: activeOrder.preference_id,
         initPoint: activeOrder.preference_init_point,
         sandboxInitPoint: activeOrder.preference_sandbox_init_point,
         externalReference: activeOrder.external_reference,
         expiresAt: activeOrder.preference_expires_at,
+        expiresInSeconds,
         reused: true
       });
     }
@@ -289,10 +340,13 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
       DO UPDATE SET
         payer_email = EXCLUDED.payer_email,
         items = EXCLUDED.items,
+        status = EXCLUDED.status,
         preference_id = EXCLUDED.preference_id,
         preference_init_point = EXCLUDED.preference_init_point,
         preference_sandbox_init_point = EXCLUDED.preference_sandbox_init_point,
         preference_expires_at = EXCLUDED.preference_expires_at,
+        payment_id = NULL,
+        payment_payload = NULL,
         updated_at = NOW()
       `,
       [
@@ -312,6 +366,7 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
       sandboxInitPoint: response.sandbox_init_point,
       externalReference: orderReference,
       expiresAt,
+      expiresInSeconds: PREFERENCE_TTL_SECONDS,
       reused: false
 
     });
@@ -414,6 +469,27 @@ paymentsRouter.get('/payments/status/:externalReference', async (req, res) => {
   }
 
   try {
+    await expireStalePreferences(externalReference);
+
+    const orderResult = await pool.query(
+      `
+      SELECT
+        external_reference,
+        status,
+        preference_id,
+        preference_init_point,
+        preference_sandbox_init_point,
+        preference_expires_at,
+        payment_id,
+        created_at,
+        updated_at
+      FROM orders
+      WHERE external_reference = $1
+      LIMIT 1
+      `,
+      [externalReference],
+    );
+    const storedOrder = orderResult.rows[0];
     const client = getMercadoPagoClient();
     const payment = new Payment(client);
     const result = await payment.search({
@@ -430,23 +506,6 @@ paymentsRouter.get('/payments/status/:externalReference', async (req, res) => {
     const latestPayment = result.results?.[0];
 
     if (!latestPayment) {
-      const orderResult = await pool.query(
-        `
-        SELECT
-          external_reference,
-          status,
-          payment_id,
-          created_at,
-          updated_at
-        FROM orders
-        WHERE external_reference = $1
-        LIMIT 1
-        `,
-        [externalReference],
-      );
-
-      const storedOrder = orderResult.rows[0];
-
       if (!storedOrder) {
         return res.status(404).json({
           found: false,
@@ -461,6 +520,14 @@ paymentsRouter.get('/payments/status/:externalReference', async (req, res) => {
         storedOrder: {
           status: storedOrder.status,
           paymentId: storedOrder.payment_id,
+          preference: {
+            id: storedOrder.preference_id,
+            initPoint: storedOrder.preference_init_point,
+            sandboxInitPoint: storedOrder.preference_sandbox_init_point,
+            expiresAt: storedOrder.preference_expires_at,
+            expiresInSeconds: getExpiresInSeconds(storedOrder.preference_expires_at),
+            expired: getExpiresInSeconds(storedOrder.preference_expires_at) === 0
+          },
           createdAt: storedOrder.created_at,
           updatedAt: storedOrder.updated_at
         }
@@ -477,7 +544,21 @@ paymentsRouter.get('/payments/status/:externalReference', async (req, res) => {
         transactionAmount: latestPayment.transaction_amount,
         dateCreated: latestPayment.date_created,
         dateApproved: latestPayment.date_approved
-      }
+      },
+      storedOrder: storedOrder ? {
+        status: storedOrder.status,
+        paymentId: storedOrder.payment_id,
+        preference: {
+          id: storedOrder.preference_id,
+          initPoint: storedOrder.preference_init_point,
+          sandboxInitPoint: storedOrder.preference_sandbox_init_point,
+          expiresAt: storedOrder.preference_expires_at,
+          expiresInSeconds: getExpiresInSeconds(storedOrder.preference_expires_at),
+          expired: getExpiresInSeconds(storedOrder.preference_expires_at) === 0
+        },
+        createdAt: storedOrder.created_at,
+        updatedAt: storedOrder.updated_at
+      } : null
     });
   } catch (error) {
     console.error('Mercado Pago status query error:', error);

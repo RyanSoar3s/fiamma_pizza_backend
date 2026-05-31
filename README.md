@@ -225,6 +225,7 @@ Response example:
   "sandboxInitPoint": "https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
   "externalReference": "order-123",
   "expiresAt": "2026-05-31T18:10:00.000Z",
+  "expiresInSeconds": 600,
   "reused": false
 }
 ```
@@ -235,7 +236,7 @@ Receives Mercado Pago payment notifications. When the notification type is `paym
 
 #### `GET /api/payments/status/:externalReference`
 
-Searches Mercado Pago for the latest payment matching the given external reference. If no payment is found, it falls back to the locally stored order.
+Searches Mercado Pago for the latest payment matching the given external reference. Before responding, the API marks expired pending preferences as `expired` and returns the stored preference expiration details.
 
 Response example:
 
@@ -250,6 +251,20 @@ Response example:
     "transactionAmount": 123,
     "dateCreated": "2026-01-01T12:00:00.000Z",
     "dateApproved": "2026-01-01T12:01:00.000Z"
+  },
+  "storedOrder": {
+    "status": "expired",
+    "paymentId": null,
+    "preference": {
+      "id": "123456789",
+      "initPoint": "https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
+      "sandboxInitPoint": "https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
+      "expiresAt": "2026-05-31T18:10:00.000Z",
+      "expiresInSeconds": 0,
+      "expired": true
+    },
+    "createdAt": "2026-05-31T18:00:00.000Z",
+    "updatedAt": "2026-05-31T18:10:01.000Z"
   }
 }
 ```
@@ -502,6 +517,7 @@ Exemplo de resposta:
   "sandboxInitPoint": "https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
   "externalReference": "order-123",
   "expiresAt": "2026-05-31T18:10:00.000Z",
+  "expiresInSeconds": 600,
   "reused": false
 }
 ```
@@ -512,7 +528,7 @@ Recebe notificações de pagamento do Mercado Pago. Quando o tipo da notificaç�
 
 #### `GET /api/payments/status/:externalReference`
 
-Busca no Mercado Pago o pagamento mais recente correspondente à referência externa. Se nenhum pagamento for encontrado, retorna o pedido armazenado localmente.
+Busca no Mercado Pago o pagamento mais recente correspondente à referência externa. Antes de responder, a API marca preferências pendentes vencidas como `expired` e retorna os detalhes de expiração da preferência armazenada.
 
 Exemplo de resposta:
 
@@ -527,6 +543,20 @@ Exemplo de resposta:
     "transactionAmount": 123,
     "dateCreated": "2026-01-01T12:00:00.000Z",
     "dateApproved": "2026-01-01T12:01:00.000Z"
+  },
+  "storedOrder": {
+    "status": "expired",
+    "paymentId": null,
+    "preference": {
+      "id": "123456789",
+      "initPoint": "https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
+      "sandboxInitPoint": "https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=123456789",
+      "expiresAt": "2026-05-31T18:10:00.000Z",
+      "expiresInSeconds": 0,
+      "expired": true
+    },
+    "createdAt": "2026-05-31T18:00:00.000Z",
+    "updatedAt": "2026-05-31T18:10:01.000Z"
   }
 }
 ```
