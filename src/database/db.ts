@@ -36,11 +36,23 @@ export async function ensureSchema() {
       payer_email TEXT,
       items JSONB NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
+      preference_id TEXT,
+      preference_init_point TEXT,
+      preference_sandbox_init_point TEXT,
+      preference_expires_at TIMESTAMPTZ,
       payment_id TEXT,
       payment_payload JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+  `);
+
+  await pool.query(`
+    ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS preference_id TEXT,
+    ADD COLUMN IF NOT EXISTS preference_init_point TEXT,
+    ADD COLUMN IF NOT EXISTS preference_sandbox_init_point TEXT,
+    ADD COLUMN IF NOT EXISTS preference_expires_at TIMESTAMPTZ;
   `);
 
 }
