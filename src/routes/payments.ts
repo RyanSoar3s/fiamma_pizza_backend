@@ -6,6 +6,8 @@ import { CreatePreferenceBody, PreferenceItem } from '../models/payment.js';
 
 export const paymentsRouter = Router();
 
+const PREFERENCE_TTL_MINUTES = 10;
+
 const ORDER_FEE_ITEM = {
   id: 'order-fee',
   title: 'Taxa de serviço',
@@ -92,6 +94,16 @@ function getMercadoPagoClient() {
 
 }
 
+function getPreferenceExpirationDates() {
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + (PREFERENCE_TTL_MINUTES * 60 * 1000));
+
+  return {
+    createdAt,
+    expiresAt
+  };
+}
+
 paymentsRouter.get('/orders', async (_req, res) => {
   try {
     const result = await pool.query(
@@ -170,9 +182,6 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
   }
 
   try {
-    const client = getMercadoPagoClient();
-    const preference = new Preference(client);
-    const orderReference = externalReference || `order-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const orderSummary = await getOrderSummary(items as NonNullable<CreatePreferenceBody['items']>);
 
     if ('error' in orderSummary) {
@@ -181,36 +190,129 @@ paymentsRouter.post('/payments/preference', async (req, res) => {
     }
 
     const preferenceItems = [...orderSummary.items, orderSummary.fee];
+    const preferenceItemsJson = JSON.stringify(preferenceItems);
 
-    await pool.query(
+    const existingOrderResult = await pool.query(
       `
-      INSERT INTO orders (external_reference, payer_email, items, status)
-      VALUES ($1, $2, $3::jsonb, 'pending')
-      ON CONFLICT (external_reference)
-      DO UPDATE SET
-        payer_email = EXCLUDED.payer_email,
-        items = EXCLUDED.items,
-        updated_at = NOW()
+      SELECT
+        external_reference,
+        status,
+        preference_id,
+        preference_init_point,
+        preference_sandbox_init_point,
+        preference_expires_at
+      FROM orders
+      WHERE
+        status = 'pending'
+        AND preference_id IS NOT NULL
+        AND preference_init_point IS NOT NULL
+        AND preference_expires_at > NOW()
+        AND (
+          ($1::text IS NOT NULL AND external_reference = $1)
+          OR (
+            $1::text IS NULL
+            AND payer_email IS NOT DISTINCT FROM $2
+            AND items = $3::jsonb
+          )
+        )
+      ORDER BY created_at DESC
+      LIMIT 1
       `,
-      [orderReference, payerEmail ?? null, JSON.stringify(preferenceItems)],
+      [externalReference ?? null, payerEmail ?? null, preferenceItemsJson],
     );
+
+    const activeOrder = existingOrderResult.rows[0];
+
+    if (activeOrder) {
+      return res.status(200).json({
+        id: activeOrder.preference_id,
+        initPoint: activeOrder.preference_init_point,
+        sandboxInitPoint: activeOrder.preference_sandbox_init_point,
+        externalReference: activeOrder.external_reference,
+        expiresAt: activeOrder.preference_expires_at,
+        reused: true
+      });
+    }
+
+    if (externalReference) {
+      const approvedOrderResult = await pool.query(
+        `
+        SELECT external_reference
+        FROM orders
+        WHERE external_reference = $1
+          AND status = 'approved'
+        LIMIT 1
+        `,
+        [externalReference],
+      );
+
+      if (approvedOrderResult.rows[0]) {
+        return res.status(409).json({
+          error: 'This order has already been approved. Create a new externalReference to start another checkout.'
+        });
+      }
+    }
+
+    const client = getMercadoPagoClient();
+    const preference = new Preference(client);
+    const orderReference = externalReference || `order-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const { createdAt, expiresAt } = getPreferenceExpirationDates();
 
     const response = await preference.create({
       body: {
         items: preferenceItems,
         payer: (payerEmail) ? { email: payerEmail } : undefined,
         external_reference: orderReference,
+        expires: true,
+        expiration_date_from: createdAt.toISOString(),
+        expiration_date_to: expiresAt.toISOString(),
         notification_url: env.mpWebhookUrl || undefined
 
       }
 
     });
 
+    await pool.query(
+      `
+      INSERT INTO orders (
+        external_reference,
+        payer_email,
+        items,
+        status,
+        preference_id,
+        preference_init_point,
+        preference_sandbox_init_point,
+        preference_expires_at
+      )
+      VALUES ($1, $2, $3::jsonb, 'pending', $4, $5, $6, $7)
+      ON CONFLICT (external_reference)
+      DO UPDATE SET
+        payer_email = EXCLUDED.payer_email,
+        items = EXCLUDED.items,
+        preference_id = EXCLUDED.preference_id,
+        preference_init_point = EXCLUDED.preference_init_point,
+        preference_sandbox_init_point = EXCLUDED.preference_sandbox_init_point,
+        preference_expires_at = EXCLUDED.preference_expires_at,
+        updated_at = NOW()
+      `,
+      [
+        orderReference,
+        payerEmail ?? null,
+        preferenceItemsJson,
+        response.id,
+        response.init_point,
+        response.sandbox_init_point ?? null,
+        expiresAt,
+      ],
+    );
+
     return res.status(201).json({
       id: response.id,
       initPoint: response.init_point,
       sandboxInitPoint: response.sandbox_init_point,
-      externalReference: orderReference
+      externalReference: orderReference,
+      expiresAt,
+      reused: false
 
     });
 
